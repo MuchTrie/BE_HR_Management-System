@@ -51,7 +51,12 @@ func main() {
 	s := &server{db: db, cfg: cfg}
 
 	r := gin.New()
-	r.Use(gin.Logger(), gin.Recovery(), cors.Default())
+	r.Use(gin.Logger(), gin.Recovery(), cors.New(cors.Config{
+		AllowOrigins:     []string{"http://localhost:5173", "http://127.0.0.1:5173"},
+		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization"},
+		AllowCredentials: true,
+	}))
 	api := r.Group("/api/v1")
 	api.POST("/auth/login", s.login)
 	api.POST("/auth/refresh", s.refresh)
@@ -217,6 +222,12 @@ func (s *server) listEmployees(c *gin.Context) {
 	if search := c.Query("search"); search != "" {
 		like := "%" + search + "%"
 		q = q.Where("first_name LIKE ? OR last_name LIKE ? OR email LIKE ? OR employee_number LIKE ?", like, like, like, like)
+	}
+	if departmentID := c.Query("department_id"); departmentID != "" {
+		q = q.Where("department_id = ?", departmentID)
+	}
+	if status := c.Query("status"); status != "" {
+		q = q.Where("status = ?", status)
 	}
 
 	q.Find(&employees)
@@ -473,6 +484,12 @@ func (s *server) listAttendance(c *gin.Context) {
 	if employeeID := c.Query("employee_id"); employeeID != "" {
 		q = q.Where("employee_id = ?", employeeID)
 	}
+	if dateFrom := c.Query("date_from"); dateFrom != "" {
+		q = q.Where("date >= ?", dateFrom)
+	}
+	if dateTo := c.Query("date_to"); dateTo != "" {
+		q = q.Where("date <= ?", dateTo)
+	}
 	q.Order("date DESC").Find(&values)
 	ok(c, values)
 }
@@ -516,6 +533,9 @@ func (s *server) listLeaves(c *gin.Context) {
 	}
 	if status := c.Query("status"); status != "" {
 		q = q.Where("status = ?", status)
+	}
+	if employeeID := c.Query("employee_id"); employeeID != "" && role == "ADMIN" {
+		q = q.Where("employee_id = ?", employeeID)
 	}
 	q.Order("created_at DESC").Find(&values)
 	ok(c, values)

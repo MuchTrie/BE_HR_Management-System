@@ -50,6 +50,8 @@ API tersedia di:
 http://localhost:8080/api/v1
 ```
 
+Frontend Vite dapat berjalan melalui `localhost:5173` atau `127.0.0.1:5173`. Kedua origin tersebut sudah diizinkan oleh CORS development agar request JWT dari frontend dapat diterima.
+
 Saat pertama kali dijalankan, server otomatis membuat database, role, akun demo, department, position, employee relation, attendance, dan leave melalui seeder internal di `internal/seeder/`.
 
 ## Akun seed development

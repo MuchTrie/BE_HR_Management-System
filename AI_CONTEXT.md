@@ -22,6 +22,10 @@ Seeder bersifat idempotent: menjalankan server berulang kali tidak menggandakan 
 
 Semua response konsisten memakai `{success,data}` atau `{success:false,error:{code,message}}`. Endpoint berprefix `/api/v1`. Error bisnis harus dikembalikan sebagai HTTP error eksplisit, bukan fallback sukses. Frontend mengonsumsi endpoint melalui `frontend/src/lib/api.ts`.
 
+### CORS dan query filter
+
+Development CORS mengizinkan origin Vite `localhost:5173` dan `127.0.0.1:5173`, termasuk header `Authorization` untuk request JWT. Endpoint list employee, attendance, dan leave menerapkan filter yang dikirim frontend (`department_id`, `status`, `employee_id`, `date_from`, dan `date_to`) setelah authorization scope.
+
 ## Perintah
 
 ```text

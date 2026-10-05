@@ -3,6 +3,9 @@
 .env.*
 !.env.example
 
+# Local AI context notes
+AI_CONTEXT.md
+
 # Local development databases
 *.db
 *.db-shm
