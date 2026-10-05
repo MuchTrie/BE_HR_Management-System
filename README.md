@@ -1,12 +1,47 @@
 # SecureHR Backend
 
-Backend REST API untuk SecureHR menggunakan Go, Gin, GORM, dan JWT. Jalankan lokal dengan SQLite pure-Go (`securehr.db`) secara default; `DATABASE_DRIVER=mysql` dan `DATABASE_DSN` dapat diarahkan ke MySQL 8.x.
+Backend SecureHR dibuat menggunakan Go, Gin, GORM, JWT, dan SQLite untuk development lokal. Backend juga mendukung MySQL melalui konfigurasi environment.
+
+## Prasyarat
+
+- Go 1.24 atau versi yang lebih baru
+- MySQL 8.x jika tidak menggunakan SQLite
+
+## Instalasi
+
+Dari folder `backend`, jalankan:
+
+```powershell
+Copy-Item .env.example .env
+go mod download
+```
+
+Edit `.env` dan ubah minimal nilai berikut:
+
+```env
+JWT_SECRET=gunakan-secret-yang-kuat
+SEED_ADMIN_PASSWORD=password-admin
+SEED_MANAGER_PASSWORD=password-manager
+SEED_EMPLOYEE_PASSWORD=password-employee
+```
+
+Secara default aplikasi menggunakan SQLite lokal:
+
+```env
+DATABASE_DRIVER=sqlite
+DATABASE_DSN=securehr.db
+```
 
 ## Menjalankan
 
-1. Salin `.env.example` menjadi `.env` dan ubah secret/password seed.
-2. Jalankan `go mod tidy`.
-3. Jalankan `go run ./cmd/server`.
-4. API tersedia di `http://localhost:8080/api/v1`.
+```powershell
+go run .\cmd\server
+```
 
-Server melakukan auto-migration untuk development dan membuat tiga role serta tiga akun demo dari environment variables. Password tidak pernah dikembalikan oleh API.
+API tersedia di:
+
+```text
+http://localhost:8080/api/v1
+```
+
+Saat pertama kali dijalankan, server otomatis membuat database, role, dan akun seed dari `.env`.
