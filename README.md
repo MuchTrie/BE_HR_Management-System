@@ -1,11 +1,12 @@
 # SecureHR Backend
 
-Backend SecureHR dibuat menggunakan Go, Gin, GORM, JWT, dan SQLite untuk development lokal. Backend juga mendukung MySQL melalui konfigurasi environment.
+Backend SecureHR dibuat menggunakan Go, Gin, GORM, JWT, dan MySQL Laragon untuk development lokal.
 
 ## Prasyarat
 
 - Go 1.24 atau versi yang lebih baru
-- MySQL 8.x jika tidak menggunakan SQLite
+- MySQL Laragon berjalan pada port `3306`
+- Database `securehr` sudah dibuat di MySQL
 
 ## Instalasi
 
@@ -20,16 +21,21 @@ Edit `.env` dan ubah minimal nilai berikut:
 
 ```env
 JWT_SECRET=gunakan-secret-yang-kuat
-SEED_ADMIN_PASSWORD=password-admin
-SEED_MANAGER_PASSWORD=password-manager
-SEED_EMPLOYEE_PASSWORD=password-employee
 ```
 
-Secara default aplikasi menggunakan SQLite lokal:
+Konfigurasi MySQL Laragon:
 
 ```env
-DATABASE_DRIVER=sqlite
-DATABASE_DSN=securehr.db
+DATABASE_DRIVER=mysql
+DATABASE_DSN=root:@tcp(127.0.0.1:3306)/securehr?charset=utf8mb4&parseTime=True&loc=Local
+```
+
+Jika MySQL Laragon menggunakan password, ubah bagian setelah `root:` pada `DATABASE_DSN`.
+
+Buat database sekali melalui HeidiSQL/phpMyAdmin:
+
+```sql
+CREATE DATABASE securehr CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 ```
 
 ## Menjalankan
@@ -44,4 +50,16 @@ API tersedia di:
 http://localhost:8080/api/v1
 ```
 
-Saat pertama kali dijalankan, server otomatis membuat database, role, dan akun seed dari `.env`.
+Saat pertama kali dijalankan, server otomatis membuat database, role, akun demo, department, position, employee relation, attendance, dan leave melalui seeder internal di `internal/seeder/`.
+
+## Akun seed development
+
+Seeder internal membuat akun berikut:
+
+```text
+admin@example.com / change-me-admin
+manager@example.com / change-me-manager
+employee@example.com / change-me-employee
+```
+
+Data tersebut khusus development. Ganti atau nonaktifkan fixture seeder sebelum deployment production.

@@ -21,6 +21,7 @@ import (
 	"securehr/backend/internal/config"
 	"securehr/backend/internal/middleware"
 	"securehr/backend/internal/model"
+	"securehr/backend/internal/seeder"
 )
 
 type server struct {
@@ -44,10 +45,10 @@ func main() {
 	if err = db.AutoMigrate(&model.Role{}, &model.Employee{}, &model.User{}, &model.Department{}, &model.Position{}, &model.Attendance{}, &model.LeaveRequest{}, &model.RefreshToken{}); err != nil {
 		panic("database migration failed: " + err.Error())
 	}
-	s := &server{db: db, cfg: cfg}
-	if err = s.seed(); err != nil {
+	if err = seeder.Seed(db); err != nil {
 		panic("database seed failed: " + err.Error())
 	}
+	s := &server{db: db, cfg: cfg}
 
 	r := gin.New()
 	r.Use(gin.Logger(), gin.Recovery(), cors.Default())
@@ -88,41 +89,6 @@ func main() {
 	if err = r.Run(":" + cfg.Port); err != nil {
 		panic(err)
 	}
-}
-
-func (s *server) seed() error {
-	for _, name := range []string{"ADMIN", "MANAGER", "EMPLOYEE"} {
-		if err := s.db.Where("name = ?", name).FirstOrCreate(&model.Role{Name: name}).Error; err != nil {
-			return err
-		}
-	}
-	accounts := []struct{ email, password, role, number string }{
-		{s.cfg.SeedAdminEmail, s.cfg.SeedAdminPassword, "ADMIN", "SEED-ADMIN"},
-		{s.cfg.SeedManagerEmail, s.cfg.SeedManagerPassword, "MANAGER", "SEED-MANAGER"},
-		{s.cfg.SeedEmployeeEmail, s.cfg.SeedEmployeePassword, "EMPLOYEE", "SEED-EMPLOYEE"},
-	}
-	for _, account := range accounts {
-		var existing model.User
-		if s.db.Where("email = ?", account.email).First(&existing).Error == nil {
-			continue
-		}
-		var role model.Role
-		if err := s.db.Where("name = ?", account.role).First(&role).Error; err != nil {
-			return err
-		}
-		employee := model.Employee{EmployeeNumber: account.number, FirstName: strings.Title(strings.ToLower(account.role)), Email: account.email, JoinDate: time.Now(), Status: "ACTIVE"}
-		if err := s.db.Create(&employee).Error; err != nil {
-			return err
-		}
-		hash, err := bcrypt.GenerateFromPassword([]byte(account.password), bcrypt.DefaultCost)
-		if err != nil {
-			return err
-		}
-		if err = s.db.Create(&model.User{EmployeeID: employee.ID, Email: account.email, PasswordHash: string(hash), RoleID: role.ID, IsActive: true}).Error; err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func ok(c *gin.Context, data interface{}) {
@@ -244,7 +210,7 @@ func publicUser(user model.User) gin.H {
 
 func (s *server) listEmployees(c *gin.Context) {
 	var employees []model.Employee
-	q := s.db.Where("status <> ?", "RESIGNED")
+	q := s.db.Preload("Department").Preload("Position").Where("status <> ?", "RESIGNED")
 	if role, _ := c.Get("role"); role == "MANAGER" {
 		q = q.Where("manager_id = ?", s.currentEmployee(c))
 	}
@@ -346,7 +312,12 @@ func (s *server) deleteEmployee(c *gin.Context) {
 
 func (s *server) listDepartments(c *gin.Context) {
 	var values []model.Department
-	s.db.Find(&values)
+	s.db.Preload("Manager").Find(&values)
+	for index := range values {
+		var count int64
+		s.db.Model(&model.Employee{}).Where("department_id = ? AND status = ?", values[index].ID, "ACTIVE").Count(&count)
+		values[index].EmployeeCount = int(count)
+	}
 	ok(c, values)
 }
 func (s *server) getDepartment(c *gin.Context) {

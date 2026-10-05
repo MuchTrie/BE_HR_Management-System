@@ -14,7 +14,9 @@ Backend adalah modular monolith Go. Request mengalir dari router/middleware ke h
 
 ## Database dan Seed
 
-`migrations/` berisi referensi migration MySQL 8.x. Untuk development lokal server menjalankan GORM AutoMigrate dan seed role + akun demo dari environment variables. Jangan commit `.env`; gunakan `.env.example`.
+`migrations/` berisi referensi migration MySQL 8.x. Untuk development lokal server menjalankan GORM AutoMigrate lalu `internal/seeder/Seed`, yang membuat role, akun demo, department, position, relasi employee, attendance, dan leave. Kredensial fixture berada di seeder internal, bukan `.env`; fixture ini hanya untuk development.
+
+Seeder bersifat idempotent: menjalankan server berulang kali tidak menggandakan data berdasarkan unique email, employee number, department/position name, atau attendance per hari.
 
 ## Kontrak API
 
@@ -28,4 +30,4 @@ go run ./cmd/server
 go test ./...
 ```
 
-Sebelum production, ganti driver SQLite development dengan MySQL, wajibkan `JWT_SECRET` yang kuat, tambahkan rate limiting, audit log, dan migration runner yang eksplisit.
+Sebelum production, ganti fixture credential, wajibkan `JWT_SECRET` yang kuat, tambahkan rate limiting, audit log, dan migration runner yang eksplisit.
