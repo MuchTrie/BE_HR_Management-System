@@ -52,7 +52,13 @@ http://localhost:8080/api/v1
 
 Frontend Vite dapat berjalan melalui `localhost:5173` atau `127.0.0.1:5173`. Kedua origin tersebut sudah diizinkan oleh CORS development agar request JWT dari frontend dapat diterima.
 
-Saat pertama kali dijalankan, server otomatis membuat database, role, akun demo, department, position, employee relation, attendance, dan leave melalui seeder internal di `internal/seeder/`.
+Saat pertama kali dijalankan, server membuat tabel kontrol
+`securehr_bootstrap_state`, menjalankan migration, lalu membuat database, role,
+akun demo, department, position, employee relation, attendance, dan leave
+melalui seeder internal di `internal/seeder/`. Pada startup berikutnya,
+migration dan seeder dilewati jika versi yang tercatat sudah sesuai. Jika ada
+perubahan schema atau seed baru, naikkan versi di `cmd/server/main.go` agar
+proses terkait dijalankan sekali lagi.
 
 ## Akun seed development
 
