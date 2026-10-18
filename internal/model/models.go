@@ -80,18 +80,21 @@ type Attendance struct {
 }
 
 type LeaveRequest struct {
-	ID         uint       `gorm:"primaryKey" json:"id"`
-	EmployeeID uint       `gorm:"not null" json:"employee_id"`
-	LeaveType  string     `gorm:"size:30;not null" json:"leave_type"`
-	StartDate  time.Time  `gorm:"type:date;not null" json:"start_date"`
-	EndDate    time.Time  `gorm:"type:date;not null" json:"end_date"`
-	Reason     string     `gorm:"type:text;not null" json:"reason"`
-	Status     string     `gorm:"size:20;not null;default:PENDING" json:"status"`
-	ApprovedBy *uint      `json:"approved_by"`
-	ApprovedAt *time.Time `json:"approved_at"`
-	CreatedAt  time.Time  `json:"created_at"`
-	UpdatedAt  time.Time  `json:"updated_at"`
-	Employee   Employee   `json:"employee"`
+	ID              uint       `gorm:"primaryKey" json:"id"`
+	EmployeeID      uint       `gorm:"not null" json:"employee_id"`
+	LeaveType       string     `gorm:"size:30;not null" json:"leave_type"`
+	StartDate       time.Time  `gorm:"type:date;not null" json:"start_date"`
+	EndDate         time.Time  `gorm:"type:date;not null" json:"end_date"`
+	Reason          string     `gorm:"type:text;not null" json:"reason"`
+	Status          string     `gorm:"size:20;not null;default:PENDING" json:"status"`
+	ApprovedBy      *uint      `json:"approved_by"`
+	ApprovedAt      *time.Time `json:"approved_at"`
+	RejectionReason string     `gorm:"type:text" json:"rejection_reason,omitempty"`
+	CancelledAt     *time.Time `json:"cancelled_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	Employee        Employee   `json:"employee"`
+	Approver        *User      `gorm:"foreignKey:ApprovedBy" json:"approver,omitempty"`
 }
 
 type RefreshToken struct {
