@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -134,31 +136,170 @@ func publicUser(user model.User) gin.H {
 	return gin.H{"id": user.ID, "email": user.Email, "role": user.Role.Name, "employee_id": user.EmployeeID, "employee": user.Employee}
 }
 
+type userResponse struct {
+	ID         uint           `json:"id"`
+	EmployeeID uint           `json:"employee_id"`
+	Employee   model.Employee `json:"employee"`
+	Email      string         `json:"email"`
+	Role       string         `json:"role"`
+	IsActive   bool           `json:"is_active"`
+	CreatedAt  time.Time      `json:"created_at"`
+	UpdatedAt  time.Time      `json:"updated_at"`
+}
+
+func newUserResponse(user model.User) userResponse {
+	return userResponse{
+		ID:         user.ID,
+		EmployeeID: user.EmployeeID,
+		Employee:   user.Employee,
+		Email:      user.Email,
+		Role:       user.Role.Name,
+		IsActive:   user.IsActive,
+		CreatedAt:  user.CreatedAt,
+		UpdatedAt:  user.UpdatedAt,
+	}
+}
+
 func (s *Server) listEmployees(c *gin.Context) {
 	var employees []model.Employee
-	q := s.db.Preload("Department").Preload("Position").Where("status <> ?", "RESIGNED")
-	if role, _ := c.Get("role"); role == "MANAGER" {
+	q := s.db.Preload("Department").Preload("Position")
+	role, _ := c.Get("role")
+	if role == "MANAGER" {
 		q = q.Where("manager_id = ?", s.currentEmployee(c))
+	} else if role == "EMPLOYEE" {
+		q = q.Where("id = ?", s.currentEmployee(c))
 	}
 	if search := c.Query("search"); search != "" {
 		like := "%" + search + "%"
 		q = q.Where("first_name LIKE ? OR last_name LIKE ? OR email LIKE ? OR employee_number LIKE ?", like, like, like, like)
 	}
 	if departmentID := c.Query("department_id"); departmentID != "" {
-		q = q.Where("department_id = ?", departmentID)
+		value, err := strconv.ParseUint(departmentID, 10, 64)
+		if err != nil || value == 0 {
+			fail(c, http.StatusBadRequest, "INVALID_QUERY", "department_id must be a positive integer")
+			return
+		}
+		q = q.Where("department_id = ?", value)
+	}
+	if positionID := c.Query("position_id"); positionID != "" {
+		value, err := strconv.ParseUint(positionID, 10, 64)
+		if err != nil || value == 0 {
+			fail(c, http.StatusBadRequest, "INVALID_QUERY", "position_id must be a positive integer")
+			return
+		}
+		q = q.Where("position_id = ?", value)
+	}
+	if gender := c.Query("gender"); gender != "" {
+		if gender != "MALE" && gender != "FEMALE" {
+			fail(c, http.StatusBadRequest, "INVALID_QUERY", "gender must be MALE or FEMALE")
+			return
+		}
+		q = q.Where("gender = ?", gender)
 	}
 	if status := c.Query("status"); status != "" {
 		q = q.Where("status = ?", status)
 	}
+	if dateFrom := c.Query("join_date_from"); dateFrom != "" {
+		if _, err := parseDate(dateFrom); err != nil {
+			fail(c, http.StatusBadRequest, "INVALID_QUERY", "join_date_from must use YYYY-MM-DD format")
+			return
+		}
+		q = q.Where("join_date >= ?", dateFrom)
+	}
+	if dateTo := c.Query("join_date_to"); dateTo != "" {
+		if _, err := parseDate(dateTo); err != nil {
+			fail(c, http.StatusBadRequest, "INVALID_QUERY", "join_date_to must use YYYY-MM-DD format")
+			return
+		}
+		q = q.Where("join_date <= ?", dateTo)
+	}
+	if dateFrom, dateTo := c.Query("join_date_from"), c.Query("join_date_to"); dateFrom != "" && dateTo != "" && dateTo < dateFrom {
+		fail(c, http.StatusBadRequest, "INVALID_QUERY", "join_date_to cannot be before join_date_from")
+		return
+	}
 
-	q.Find(&employees)
-	ok(c, gin.H{"items": employees, "total": len(employees), "page": 1, "per_page": len(employees), "total_pages": 1})
+	page, perPage, valid := paginationParams(c)
+	if !valid {
+		return
+	}
+	sortColumn, valid := employeeSortColumn(c.Query("sort_by"))
+	if !valid {
+		fail(c, http.StatusBadRequest, "INVALID_QUERY", "sort_by is not supported")
+		return
+	}
+	sortOrder := strings.ToUpper(c.DefaultQuery("sort_order", "ASC"))
+	if sortOrder != "ASC" && sortOrder != "DESC" {
+		fail(c, http.StatusBadRequest, "INVALID_QUERY", "sort_order must be ASC or DESC")
+		return
+	}
+
+	var total int64
+	if err := q.Model(&model.Employee{}).Count(&total).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "LIST_FAILED", "Could not count employees")
+		return
+	}
+	if err := q.Order(sortColumn + " " + sortOrder + ", id ASC").
+		Offset((page - 1) * perPage).
+		Limit(perPage).
+		Find(&employees).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "LIST_FAILED", "Could not list employees")
+		return
+	}
+	ok(c, gin.H{
+		"items": employees, "total": total, "page": page, "per_page": perPage,
+		"total_pages": int(math.Ceil(float64(total) / float64(perPage))),
+	})
+}
+
+func paginationParams(c *gin.Context) (int, int, bool) {
+	page := 1
+	perPage := 10
+	var err error
+	if value := c.Query("page"); value != "" {
+		page, err = strconv.Atoi(value)
+		if err != nil || page < 1 {
+			fail(c, http.StatusBadRequest, "INVALID_QUERY", "page must be a positive integer")
+			return 0, 0, false
+		}
+	}
+	if value := c.Query("per_page"); value != "" {
+		perPage, err = strconv.Atoi(value)
+		if err != nil || (perPage != 10 && perPage != 25 && perPage != 50) {
+			fail(c, http.StatusBadRequest, "INVALID_QUERY", "per_page must be 10, 25, or 50")
+			return 0, 0, false
+		}
+	}
+	return page, perPage, true
+}
+
+func employeeSortColumn(value string) (string, bool) {
+	columns := map[string]string{
+		"id": "id", "employee_number": "employee_number", "first_name": "first_name",
+		"last_name": "last_name", "email": "email", "phone": "phone",
+		"date_of_birth": "date_of_birth", "gender": "gender",
+		"department_id": "department_id", "position_id": "position_id",
+		"manager_id": "manager_id", "join_date": "join_date", "status": "status",
+		"created_at": "created_at", "updated_at": "updated_at",
+	}
+	if value == "" {
+		return "first_name", true
+	}
+	column, ok := columns[value]
+	return column, ok
 }
 
 func (s *Server) listUsers(c *gin.Context) {
 	var users []model.User
-	s.db.Preload("Role").Preload("Employee").Find(&users)
-	ok(c, users)
+	if err := s.db.Preload("Role").Preload("Employee").Find(&users).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "DATABASE_ERROR", "Could not load users")
+		return
+	}
+
+	response := make([]userResponse, 0, len(users))
+	for _, user := range users {
+		response = append(response, newUserResponse(user))
+	}
+	ok(c, response)
 }
 
 func (s *Server) toggleUserStatus(c *gin.Context) {
@@ -177,8 +318,11 @@ func (s *Server) toggleUserStatus(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, "UPDATE_FAILED", "Could not update user")
 		return
 	}
-	s.db.Preload("Role").Preload("Employee").First(&user, userID)
-	ok(c, user)
+	if err := s.db.Preload("Role").Preload("Employee").First(&user, userID).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "DATABASE_ERROR", "Could not load updated user")
+		return
+	}
+	ok(c, newUserResponse(user))
 }
 func (s *Server) getEmployee(c *gin.Context) {
 	employeeID, valid := id(c)
