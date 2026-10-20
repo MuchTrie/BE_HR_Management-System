@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	currentSchemaVersion = 2
-	currentSeedVersion   = 1
+	currentSchemaVersion = 3
+	currentSeedVersion   = 2
 )
 
 type bootstrapState struct {
@@ -44,7 +44,7 @@ func Initialize(db *gorm.DB) error {
 		return err
 	}
 	if schemaVersion < currentSchemaVersion {
-		if err := db.AutoMigrate(&model.Role{}, &model.Employee{}, &model.User{}, &model.Department{}, &model.Position{}, &model.Attendance{}, &model.LeaveRequest{}, &model.RefreshToken{}); err != nil {
+		if err := db.AutoMigrate(&model.Role{}, &model.Employee{}, &model.User{}, &model.Department{}, &model.Position{}, &model.Attendance{}, &model.LeaveRequest{}, &model.LeavePolicy{}, &model.LeaveBalance{}, &model.CompanyHoliday{}, &model.LeaveStatusHistory{}, &model.ApprovalDelegation{}, &model.RefreshToken{}); err != nil {
 			return fmt.Errorf("database migration: %w", err)
 		}
 		if err := setBootstrapVersion(db, "schema", currentSchemaVersion); err != nil {

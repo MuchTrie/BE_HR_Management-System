@@ -440,17 +440,32 @@ func (s *Server) createLeave(c *gin.Context) {
 		fail(c, 400, "INVALID_REQUEST", "Invalid leave dates or payload")
 		return
 	}
+	policy, err := s.leavePolicy(input.LeaveType)
+	if err != nil {
+		fail(c, http.StatusBadRequest, "INVALID_LEAVE_TYPE", "Unsupported leave type")
+		return
+	}
+	days, valid, ruleMessage := s.validateLeaveDates(startDate, endDate, policy)
+	if !valid {
+		fail(c, http.StatusConflict, "LEAVE_RULE_VIOLATION", ruleMessage)
+		return
+	}
+	if !s.hasLeaveBalance(employeeID, input.LeaveType, startDate.Year(), days, 0) {
+		fail(c, http.StatusConflict, "LEAVE_QUOTA_EXCEEDED", "Leave request exceeds the available quota")
+		return
+	}
 	var overlap int64
 	s.db.Model(&model.LeaveRequest{}).Where("employee_id = ? AND status IN ? AND start_date <= ? AND end_date >= ?", employeeID, []string{"PENDING", "APPROVED"}, endDate, startDate).Count(&overlap)
 	if overlap > 0 {
 		fail(c, 409, "LEAVE_OVERLAP", "Leave dates overlap an existing request")
 		return
 	}
-	value := model.LeaveRequest{EmployeeID: employeeID, LeaveType: input.LeaveType, StartDate: startDate, EndDate: endDate, Reason: input.Reason, Status: "PENDING"}
+	value := model.LeaveRequest{EmployeeID: employeeID, LeaveType: input.LeaveType, StartDate: startDate, EndDate: endDate, Reason: input.Reason, Status: "PENDING", RequiredLevels: policy.RequiredApprovalLevels}
 	if s.db.Create(&value).Error != nil {
 		fail(c, 500, "CREATE_FAILED", "Could not create leave request")
 		return
 	}
+	s.recordLeaveHistory(value.ID, "", "PENDING", c.MustGet("user_id").(uint), "Leave request created")
 	s.db.Preload("Employee").First(&value, value.ID)
 	created(c, value)
 }
@@ -525,6 +540,25 @@ func (s *Server) changeLeaveStatus(c *gin.Context, status string) {
 		fail(c, 409, "INVALID_STATUS", "Only pending requests can be processed")
 		return
 	}
+	actorID := c.MustGet("user_id").(uint)
+	if status == "APPROVED" && value.RequiredLevels > value.ApprovalLevel+1 {
+		if c.GetString("role") != "ADMIN" {
+			if !s.canAccessLeave(c, value) {
+				fail(c, http.StatusForbidden, "FORBIDDEN", "You cannot approve this leave request")
+				return
+			}
+		}
+		nextLevel := value.ApprovalLevel + 1
+		if err := s.db.Model(&value).Update("approval_level", nextLevel).Error; err != nil {
+			fail(c, http.StatusInternalServerError, "UPDATE_FAILED", "Could not record approval level")
+			return
+		}
+		s.recordLeaveHistory(value.ID, value.Status, value.Status, actorID, fmt.Sprintf("Approval level %d completed", nextLevel))
+		value.ApprovalLevel = nextLevel
+		s.db.Preload("Employee").First(&value, leaveID)
+		ok(c, value)
+		return
+	}
 	updates := map[string]interface{}{"status": status}
 	if status == "APPROVED" {
 		uid := c.MustGet("user_id").(uint)
@@ -541,6 +575,14 @@ func (s *Server) changeLeaveStatus(c *gin.Context, status string) {
 		fail(c, 500, "UPDATE_FAILED", "Could not update leave request")
 		return
 	}
+	reason := value.RejectionReason
+	if status == "APPROVED" {
+		reason = "Leave approved"
+	}
+	if status == "CANCELLED" {
+		reason = "Leave cancelled"
+	}
+	s.recordLeaveHistory(value.ID, value.Status, status, actorID, reason)
 	s.db.Preload("Employee").Preload("Approver").Preload("Approver.Employee").First(&value, leaveID)
 	ok(c, value)
 }
@@ -554,14 +596,330 @@ func (s *Server) canAccessLeave(c *gin.Context, value model.LeaveRequest) bool {
 	}
 	if role == "MANAGER" {
 		var employee model.Employee
-		return s.db.First(&employee, value.EmployeeID).Error == nil &&
-			employee.ManagerID != nil && *employee.ManagerID == s.currentEmployee(c)
+		if s.db.First(&employee, value.EmployeeID).Error == nil &&
+			employee.ManagerID != nil && *employee.ManagerID == s.currentEmployee(c) {
+			return true
+		}
+		var delegation model.ApprovalDelegation
+		today := dateOnly(time.Now())
+		return s.db.Where("manager_id = ? AND delegate_id = ? AND start_date <= ? AND end_date >= ?",
+			employee.ManagerID, s.currentEmployee(c), today, today).First(&delegation).Error == nil
 	}
 	return false
 }
 func parseDate(value string) (time.Time, error) {
 	return time.Parse("2006-01-02", value)
 }
+
+func (s *Server) leavePolicy(leaveType string) (model.LeavePolicy, error) {
+	var policy model.LeavePolicy
+	err := s.db.Where("leave_type = ?", leaveType).First(&policy).Error
+	return policy, err
+}
+
+func (s *Server) validateLeaveDates(start, end time.Time, policy model.LeavePolicy) (int, bool, string) {
+	days := 0
+	for date := dateOnly(start); !date.After(dateOnly(end)); date = date.AddDate(0, 0, 1) {
+		if !policy.AllowWeekend && (date.Weekday() == time.Saturday || date.Weekday() == time.Sunday) {
+			return 0, false, "Tanggal cuti tidak boleh jatuh pada weekend."
+		}
+		var holiday model.CompanyHoliday
+		if s.db.Where("date = ?", date).Limit(1).Find(&holiday).Error != nil {
+			return 0, false, "Tidak dapat memeriksa kalender hari libur."
+		}
+		if holiday.ID != 0 {
+			return 0, false, "Tanggal cuti tidak boleh jatuh pada hari libur perusahaan."
+		}
+		days++
+	}
+	if days == 0 || (policy.MaxConsecutiveDays > 0 && days > policy.MaxConsecutiveDays) {
+		return 0, false, fmt.Sprintf("Durasi cuti melebihi batas maksimal %d hari.", policy.MaxConsecutiveDays)
+	}
+	return days, true, ""
+}
+
+func (s *Server) leaveDays(start, end time.Time) int {
+	days := 0
+	for date := dateOnly(start); !date.After(dateOnly(end)); date = date.AddDate(0, 0, 1) {
+		var holiday model.CompanyHoliday
+		if date.Weekday() != time.Saturday && date.Weekday() != time.Sunday {
+			s.db.Where("date = ?", date).Limit(1).Find(&holiday)
+		}
+		if date.Weekday() != time.Saturday && date.Weekday() != time.Sunday && holiday.ID == 0 {
+			days++
+		}
+	}
+	return days
+}
+
+func (s *Server) hasLeaveBalance(employeeID uint, leaveType string, year, requested int, excludeID uint) bool {
+	policy, err := s.leavePolicy(leaveType)
+	if err != nil {
+		return false
+	}
+	var requests []model.LeaveRequest
+	query := s.db.Where("employee_id = ? AND leave_type = ? AND status IN ? AND start_date >= ? AND start_date < ?",
+		employeeID, leaveType, []string{"PENDING", "APPROVED"},
+		time.Date(year, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(year+1, 1, 1, 0, 0, 0, 0, time.UTC))
+	if excludeID > 0 {
+		query = query.Where("id <> ?", excludeID)
+	}
+	if query.Find(&requests).Error != nil {
+		return false
+	}
+	used := requested
+	for _, request := range requests {
+		used += s.leaveDays(request.StartDate, request.EndDate)
+	}
+	return used <= policy.AnnualQuotaDays
+}
+
+func (s *Server) recordLeaveHistory(leaveID uint, from, to string, changedBy uint, reason string) {
+	_ = s.db.Create(&model.LeaveStatusHistory{
+		LeaveID: leaveID, FromStatus: from, ToStatus: to, ChangedBy: changedBy, Reason: reason,
+	}).Error
+}
+
+func (s *Server) leaveBalance(c *gin.Context) {
+	employeeID := s.currentEmployee(c)
+	if employeeID == 0 {
+		return
+	}
+	year := time.Now().Year()
+	if value := c.Query("year"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 2000 || parsed > 2100 {
+			fail(c, http.StatusBadRequest, "INVALID_YEAR", "Invalid leave balance year")
+			return
+		}
+		year = parsed
+	}
+	var policies []model.LeavePolicy
+	if err := s.db.Order("id").Find(&policies).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "DATABASE_ERROR", "Could not load leave policies")
+		return
+	}
+	type balanceResponse struct {
+		LeaveType string `json:"leave_type"`
+		Quota     int    `json:"quota"`
+		Used      int    `json:"used"`
+		Remaining int    `json:"remaining"`
+		Year      int    `json:"year"`
+	}
+	result := make([]balanceResponse, 0, len(policies))
+	for _, policy := range policies {
+		var requests []model.LeaveRequest
+		s.db.Where("employee_id = ? AND leave_type = ? AND status IN ? AND start_date >= ? AND start_date < ?",
+			employeeID, policy.LeaveType, []string{"PENDING", "APPROVED"},
+			time.Date(year, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(year+1, 1, 1, 0, 0, 0, 0, time.UTC)).Find(&requests)
+		used := 0
+		for _, request := range requests {
+			used += s.leaveDays(request.StartDate, request.EndDate)
+		}
+		result = append(result, balanceResponse{LeaveType: policy.LeaveType, Quota: policy.AnnualQuotaDays, Used: used, Remaining: maxInt(policy.AnnualQuotaDays-used, 0), Year: year})
+	}
+	ok(c, result)
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func (s *Server) listLeavePolicies(c *gin.Context) {
+	var policies []model.LeavePolicy
+	if err := s.db.Order("id").Find(&policies).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "DATABASE_ERROR", "Could not load leave policies")
+		return
+	}
+	ok(c, policies)
+}
+
+func (s *Server) updateLeavePolicy(c *gin.Context) {
+	policyID, valid := id(c)
+	if !valid {
+		fail(c, http.StatusBadRequest, "INVALID_ID", "Invalid policy id")
+		return
+	}
+	var policy model.LeavePolicy
+	if s.db.First(&policy, policyID).Error != nil {
+		fail(c, http.StatusNotFound, "NOT_FOUND", "Leave policy not found")
+		return
+	}
+	var input struct {
+		AnnualQuotaDays        int  `json:"annual_quota_days" binding:"required"`
+		MaxConsecutiveDays     int  `json:"max_consecutive_days"`
+		AllowWeekend           bool `json:"allow_weekend"`
+		RequiredApprovalLevels int  `json:"required_approval_levels" binding:"required"`
+	}
+	if c.ShouldBindJSON(&input) != nil || input.AnnualQuotaDays < 0 || input.RequiredApprovalLevels < 1 {
+		fail(c, http.StatusBadRequest, "INVALID_REQUEST", "Invalid leave policy")
+		return
+	}
+	if err := s.db.Model(&policy).Updates(map[string]interface{}{
+		"annual_quota_days": input.AnnualQuotaDays, "max_consecutive_days": input.MaxConsecutiveDays,
+		"allow_weekend": input.AllowWeekend, "required_approval_levels": input.RequiredApprovalLevels,
+	}).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "UPDATE_FAILED", "Could not update leave policy")
+		return
+	}
+	s.db.First(&policy, policyID)
+	ok(c, policy)
+}
+
+func (s *Server) listHolidays(c *gin.Context) {
+	var holidays []model.CompanyHoliday
+	query := s.db.Order("date ASC")
+	if year := c.Query("year"); year != "" {
+		query = query.Where("date >= ? AND date < ?", year+"-01-01", strconv.Itoa(mustInt(year)+1)+"-01-01")
+	}
+	if err := query.Find(&holidays).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "DATABASE_ERROR", "Could not load holidays")
+		return
+	}
+	ok(c, holidays)
+}
+
+func mustInt(value string) int {
+	parsed, _ := strconv.Atoi(value)
+	return parsed
+}
+
+func (s *Server) createHoliday(c *gin.Context) {
+	var input struct {
+		Date string `json:"date" binding:"required"`
+		Name string `json:"name" binding:"required"`
+	}
+	if c.ShouldBindJSON(&input) != nil {
+		fail(c, http.StatusBadRequest, "INVALID_REQUEST", "Holiday date and name are required")
+		return
+	}
+	date, err := parseDate(input.Date)
+	if err != nil {
+		fail(c, http.StatusBadRequest, "INVALID_DATE", "Date must use YYYY-MM-DD format")
+		return
+	}
+	holiday := model.CompanyHoliday{Date: date, Name: strings.TrimSpace(input.Name)}
+	if err := s.db.Create(&holiday).Error; err != nil {
+		fail(c, http.StatusConflict, "DUPLICATE", "Holiday already exists")
+		return
+	}
+	created(c, holiday)
+}
+
+func (s *Server) listApprovalDelegations(c *gin.Context) {
+	var values []model.ApprovalDelegation
+	query := s.db.Order("start_date DESC")
+	if c.GetString("role") == "MANAGER" {
+		query = query.Where("manager_id = ?", s.currentEmployee(c))
+	}
+	if err := query.Find(&values).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "DATABASE_ERROR", "Could not load approval delegations")
+		return
+	}
+	ok(c, values)
+}
+
+func (s *Server) createApprovalDelegation(c *gin.Context) {
+	var input struct {
+		DelegateID uint   `json:"delegate_id" binding:"required"`
+		StartDate  string `json:"start_date" binding:"required"`
+		EndDate    string `json:"end_date" binding:"required"`
+	}
+	if c.ShouldBindJSON(&input) != nil {
+		fail(c, http.StatusBadRequest, "INVALID_REQUEST", "Delegation fields are required")
+		return
+	}
+	start, startErr := parseDate(input.StartDate)
+	end, endErr := parseDate(input.EndDate)
+	managerID := s.currentEmployee(c)
+	if startErr != nil || endErr != nil || end.Before(start) || input.DelegateID == managerID {
+		fail(c, http.StatusBadRequest, "INVALID_REQUEST", "Invalid delegation dates or delegate")
+		return
+	}
+	var delegate model.Employee
+	if s.db.Where("id = ? AND status = ?", input.DelegateID, "ACTIVE").First(&delegate).Error != nil {
+		fail(c, http.StatusNotFound, "NOT_FOUND", "Delegate employee not found")
+		return
+	}
+	value := model.ApprovalDelegation{ManagerID: managerID, DelegateID: input.DelegateID, StartDate: start, EndDate: end}
+	if err := s.db.Create(&value).Error; err != nil {
+		fail(c, http.StatusConflict, "DUPLICATE", "Delegation could not be created")
+		return
+	}
+	created(c, value)
+}
+
+func (s *Server) updateLeave(c *gin.Context) {
+	leaveID, valid := id(c)
+	if !valid {
+		fail(c, http.StatusBadRequest, "INVALID_ID", "Invalid leave id")
+		return
+	}
+	var leave model.LeaveRequest
+	if s.db.First(&leave, leaveID).Error != nil || !s.canAccessLeave(c, leave) || leave.Status != "PENDING" {
+		fail(c, http.StatusConflict, "INVALID_STATUS", "Only accessible pending leave can be edited")
+		return
+	}
+	var input struct {
+		LeaveType string `json:"leave_type" binding:"required"`
+		StartDate string `json:"start_date" binding:"required"`
+		EndDate   string `json:"end_date" binding:"required"`
+		Reason    string `json:"reason" binding:"required"`
+	}
+	if c.ShouldBindJSON(&input) != nil {
+		fail(c, http.StatusBadRequest, "INVALID_REQUEST", "Invalid leave payload")
+		return
+	}
+	start, startErr := parseDate(input.StartDate)
+	end, endErr := parseDate(input.EndDate)
+	policy, policyErr := s.leavePolicy(input.LeaveType)
+	if startErr != nil || endErr != nil || policyErr != nil || end.Before(start) {
+		fail(c, http.StatusBadRequest, "INVALID_REQUEST", "Invalid leave dates or type")
+		return
+	}
+	days, validDates, ruleMessage := s.validateLeaveDates(start, end, policy)
+	if !validDates || !s.hasLeaveBalance(leave.EmployeeID, input.LeaveType, start.Year(), days, leave.ID) {
+		if !validDates {
+			fail(c, http.StatusConflict, "LEAVE_RULE_VIOLATION", ruleMessage)
+		} else {
+			fail(c, http.StatusConflict, "LEAVE_QUOTA_EXCEEDED", "Pengajuan cuti melebihi sisa kuota cuti Anda.")
+		}
+		return
+	}
+	if err := s.db.Model(&leave).Updates(map[string]interface{}{"leave_type": input.LeaveType, "start_date": start, "end_date": end, "reason": strings.TrimSpace(input.Reason), "required_levels": policy.RequiredApprovalLevels}).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "UPDATE_FAILED", "Could not update leave request")
+		return
+	}
+	s.db.Preload("Employee").First(&leave, leave.ID)
+	ok(c, leave)
+}
+
+func (s *Server) leaveHistory(c *gin.Context) {
+	leaveID, valid := id(c)
+	if !valid {
+		fail(c, http.StatusBadRequest, "INVALID_ID", "Invalid leave id")
+		return
+	}
+	var leave model.LeaveRequest
+	if s.db.First(&leave, leaveID).Error != nil || !s.canAccessLeave(c, leave) {
+		fail(c, http.StatusForbidden, "FORBIDDEN", "You cannot access this leave history")
+		return
+	}
+	var history []model.LeaveStatusHistory
+	if err := s.db.Where("leave_id = ?", leaveID).Order("created_at ASC").Find(&history).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "DATABASE_ERROR", "Could not load leave history")
+		return
+	}
+	ok(c, history)
+}
+
+func dateOnly(value time.Time) time.Time {
+	return time.Date(value.Year(), value.Month(), value.Day(), 0, 0, 0, 0, value.Location())
+}
+
 func (s *Server) dashboard(c *gin.Context) {
 	var employees, departments, users, pending, present, absent int64
 	s.db.Model(&model.Employee{}).Where("status = ?", "ACTIVE").Count(&employees)
