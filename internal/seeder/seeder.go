@@ -118,6 +118,25 @@ func Seed(db *gorm.DB) error {
 	if err := seedLeaves(db, employee, manager); err != nil {
 		return err
 	}
+	if err := seedLeaveRules(db); err != nil {
+		return err
+	}
+	return nil
+}
+
+func seedLeaveRules(db *gorm.DB) error {
+	policies := []model.LeavePolicy{
+		{LeaveType: "ANNUAL", AnnualQuotaDays: 12, MaxConsecutiveDays: 12, AllowWeekend: false, RequiredApprovalLevels: 1},
+		{LeaveType: "SICK", AnnualQuotaDays: 12, MaxConsecutiveDays: 0, AllowWeekend: false, RequiredApprovalLevels: 1},
+		{LeaveType: "PERSONAL", AnnualQuotaDays: 3, MaxConsecutiveDays: 3, AllowWeekend: false, RequiredApprovalLevels: 1},
+		{LeaveType: "MATERNITY", AnnualQuotaDays: 90, MaxConsecutiveDays: 90, AllowWeekend: false, RequiredApprovalLevels: 1},
+		{LeaveType: "EMERGENCY", AnnualQuotaDays: 3, MaxConsecutiveDays: 3, AllowWeekend: false, RequiredApprovalLevels: 1},
+	}
+	for _, policy := range policies {
+		if err := db.Where("leave_type = ?", policy.LeaveType).FirstOrCreate(&policy, policy).Error; err != nil {
+			return fmt.Errorf("seed leave policy %s: %w", policy.LeaveType, err)
+		}
+	}
 	return nil
 }
 

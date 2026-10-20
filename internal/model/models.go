@@ -91,10 +91,63 @@ type LeaveRequest struct {
 	ApprovedAt      *time.Time `json:"approved_at"`
 	RejectionReason string     `gorm:"type:text" json:"rejection_reason,omitempty"`
 	CancelledAt     *time.Time `json:"cancelled_at,omitempty"`
+	ApprovalLevel   int        `gorm:"not null;default:0" json:"approval_level"`
+	RequiredLevels  int        `gorm:"not null;default:1" json:"required_levels"`
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
 	Employee        Employee   `json:"employee"`
 	Approver        *User      `gorm:"foreignKey:ApprovedBy" json:"approver,omitempty"`
+}
+
+type LeavePolicy struct {
+	ID                     uint      `gorm:"primaryKey" json:"id"`
+	LeaveType              string    `gorm:"uniqueIndex;size:30;not null" json:"leave_type"`
+	AnnualQuotaDays        int       `gorm:"not null" json:"annual_quota_days"`
+	MaxConsecutiveDays     int       `gorm:"not null;default:0" json:"max_consecutive_days"`
+	AllowWeekend           bool      `gorm:"not null;default:false" json:"allow_weekend"`
+	RequiredApprovalLevels int       `gorm:"not null;default:1" json:"required_approval_levels"`
+	CreatedAt              time.Time `json:"created_at"`
+	UpdatedAt              time.Time `json:"updated_at"`
+}
+
+type LeaveBalance struct {
+	ID           uint      `gorm:"primaryKey" json:"id"`
+	EmployeeID   uint      `gorm:"uniqueIndex:uq_leave_balance;not null" json:"employee_id"`
+	LeaveType    string    `gorm:"uniqueIndex:uq_leave_balance;size:30;not null" json:"leave_type"`
+	Year         int       `gorm:"uniqueIndex:uq_leave_balance;not null" json:"year"`
+	EntitledDays int       `gorm:"not null" json:"entitled_days"`
+	AdjustedDays int       `gorm:"not null;default:0" json:"adjusted_days"`
+	UsedDays     int       `gorm:"not null;default:0" json:"used_days"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+type CompanyHoliday struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	Date      time.Time `gorm:"uniqueIndex;type:date;not null" json:"date"`
+	Name      string    `gorm:"size:150;not null" json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type LeaveStatusHistory struct {
+	ID         uint      `gorm:"primaryKey" json:"id"`
+	LeaveID    uint      `gorm:"index;not null" json:"leave_id"`
+	FromStatus string    `gorm:"size:20" json:"from_status"`
+	ToStatus   string    `gorm:"size:20;not null" json:"to_status"`
+	ChangedBy  uint      `gorm:"not null" json:"changed_by"`
+	Reason     string    `gorm:"type:text" json:"reason,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+type ApprovalDelegation struct {
+	ID         uint      `gorm:"primaryKey" json:"id"`
+	ManagerID  uint      `gorm:"index;not null" json:"manager_id"`
+	DelegateID uint      `gorm:"index;not null" json:"delegate_id"`
+	StartDate  time.Time `gorm:"type:date;not null" json:"start_date"`
+	EndDate    time.Time `gorm:"type:date;not null" json:"end_date"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 type RefreshToken struct {
