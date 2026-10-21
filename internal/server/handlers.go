@@ -1065,12 +1065,128 @@ func dateOnly(value time.Time) time.Time {
 }
 
 func (s *Server) dashboard(c *gin.Context) {
-	var employees, departments, users, pending, present, absent int64
-	s.db.Model(&model.Employee{}).Where("status = ?", "ACTIVE").Count(&employees)
-	s.db.Model(&model.Department{}).Count(&departments)
-	s.db.Model(&model.User{}).Where("is_active = ?", true).Count(&users)
-	s.db.Model(&model.LeaveRequest{}).Where("status = ?", "PENDING").Count(&pending)
-	s.db.Model(&model.Attendance{}).Where("date = ? AND status IN ?", time.Now().Truncate(24*time.Hour), []string{"PRESENT", "LATE"}).Count(&present)
-	s.db.Model(&model.Employee{}).Where("status = ?", "ACTIVE").Count(&absent)
-	ok(c, gin.H{"total_employees": employees, "total_departments": departments, "total_users": users, "pending_leaves": pending, "present_today": present, "absent_today": absent - present})
+	preset := c.DefaultQuery("preset", "this_month")
+	start, end, valid := dashboardPeriod(preset, time.Now())
+	if !valid {
+		fail(c, http.StatusBadRequest, "INVALID_QUERY", "preset must be this_month, last_3_months, or this_year")
+		return
+	}
+
+	employeeQuery := s.dashboardEmployeeQuery(c)
+	var employees []model.Employee
+	if err := employeeQuery.Preload("Department").Find(&employees).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "DATABASE_ERROR", "Could not load dashboard employees")
+		return
+	}
+	employeeIDs := make([]uint, 0, len(employees))
+	for _, employee := range employees {
+		employeeIDs = append(employeeIDs, employee.ID)
+	}
+
+	var attendance []model.Attendance
+	attendanceQuery := s.db.Where("date >= ? AND date <= ?", start, end)
+	if len(employeeIDs) > 0 {
+		attendanceQuery = attendanceQuery.Where("employee_id IN ?", employeeIDs)
+	} else {
+		attendanceQuery = attendanceQuery.Where("1 = 0")
+	}
+	if err := attendanceQuery.Find(&attendance).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "DATABASE_ERROR", "Could not load dashboard attendance")
+		return
+	}
+
+	var leaves []model.LeaveRequest
+	leaveQuery := s.db.Where("start_date <= ? AND end_date >= ?", end, start)
+	if len(employeeIDs) > 0 {
+		leaveQuery = leaveQuery.Where("employee_id IN ?", employeeIDs)
+	} else {
+		leaveQuery = leaveQuery.Where("1 = 0")
+	}
+	if err := leaveQuery.Find(&leaves).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "DATABASE_ERROR", "Could not load dashboard leaves")
+		return
+	}
+
+	departmentCounts := map[string]int{}
+	employeeStatusCounts := map[string]int{}
+	attendanceStatusCounts := map[string]int{}
+	leaveStatusCounts := map[string]int{}
+	leaveMonthly := map[string]int{}
+	lateCount := 0
+	for _, employee := range employees {
+		employeeStatusCounts[employee.Status]++
+		if employee.Department != nil {
+			departmentCounts[employee.Department.Name]++
+		} else {
+			departmentCounts["Unassigned"]++
+		}
+	}
+	for _, record := range attendance {
+		attendanceStatusCounts[record.Status]++
+		if record.Status == "LATE" {
+			lateCount++
+		}
+	}
+	for _, leave := range leaves {
+		leaveStatusCounts[leave.Status]++
+		month := leave.StartDate.Format("2006-01")
+		leaveMonthly[month]++
+	}
+
+	activeEmployees := employeeStatusCounts["ACTIVE"]
+	today := dateOnly(time.Now())
+	presentToday := 0
+	for _, record := range attendance {
+		if dateOnly(record.Date).Equal(today) && (record.Status == "PRESENT" || record.Status == "LATE") {
+			presentToday++
+		}
+	}
+
+	var users int64
+	if c.GetString("role") == "ADMIN" {
+		s.db.Model(&model.User{}).Where("is_active = ?", true).Count(&users)
+	}
+	ok(c, gin.H{
+		"preset":                  preset,
+		"period_start":            start.Format("2006-01-02"),
+		"period_end":              end.Format("2006-01-02"),
+		"total_employees":         activeEmployees,
+		"total_departments":       len(departmentCounts),
+		"total_users":             users,
+		"pending_leaves":          leaveStatusCounts["PENDING"],
+		"present_today":           presentToday,
+		"absent_today":            maxInt(activeEmployees-presentToday, 0),
+		"department_counts":       departmentCounts,
+		"attendance_status_counts": attendanceStatusCounts,
+		"leave_monthly":            leaveMonthly,
+		"leave_status_counts":      leaveStatusCounts,
+		"employee_status_counts":  employeeStatusCounts,
+		"late_attendance":         lateCount,
+	})
+}
+
+func dashboardPeriod(preset string, now time.Time) (time.Time, time.Time, bool) {
+	today := dateOnly(now)
+	switch preset {
+	case "this_month":
+		return time.Date(today.Year(), today.Month(), 1, 0, 0, 0, 0, today.Location()), today, true
+	case "last_3_months":
+		start := time.Date(today.Year(), today.Month(), 1, 0, 0, 0, 0, today.Location()).AddDate(0, -2, 0)
+		return start, today, true
+	case "this_year":
+		return time.Date(today.Year(), 1, 1, 0, 0, 0, 0, today.Location()), today, true
+	default:
+		return time.Time{}, time.Time{}, false
+	}
+}
+
+func (s *Server) dashboardEmployeeQuery(c *gin.Context) *gorm.DB {
+	query := s.db.Model(&model.Employee{})
+	switch c.GetString("role") {
+	case "EMPLOYEE":
+		query = query.Where("id = ?", s.currentEmployee(c))
+	case "MANAGER":
+		query = query.Where("manager_id = ?", s.currentEmployee(c))
+	}
+	return query
 }
