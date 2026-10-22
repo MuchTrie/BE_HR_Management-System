@@ -22,7 +22,8 @@ const (
 )
 
 type account struct {
-	email, password, role, number, firstName, lastName string
+	email, password, role, number, firstName, lastName, phone, address, gender string
+	dateOfBirth                                                                time.Time
 }
 
 func Seed(db *gorm.DB) error {
@@ -36,13 +37,13 @@ func Seed(db *gorm.DB) error {
 	}
 
 	accounts := []account{
-		{adminEmail, adminPassword, "ADMIN", "SEED-ADMIN", "Admin", "User"},
-		{managerEmail, managerPassword, "MANAGER", "SEED-MANAGER", "Manager", "User"},
-		{employeeEmail, employeePassword, "EMPLOYEE", "SEED-EMPLOYEE", "Employee", "User"},
+		{email: adminEmail, password: adminPassword, role: "ADMIN", number: "SEED-ADMIN", firstName: "Admin", lastName: "User", phone: "081200000001", address: "Jl. Administrasi No. 1, Jakarta", gender: "MALE", dateOfBirth: time.Date(1985, 3, 12, 0, 0, 0, 0, time.Local)},
+		{email: managerEmail, password: managerPassword, role: "MANAGER", number: "SEED-MANAGER", firstName: "Manager", lastName: "User", phone: "081200000002", address: "Jl. Kepemimpinan No. 2, Jakarta", gender: "FEMALE", dateOfBirth: time.Date(1988, 7, 24, 0, 0, 0, 0, time.Local)},
+		{email: employeeEmail, password: employeePassword, role: "EMPLOYEE", number: "SEED-EMPLOYEE", firstName: "Employee", lastName: "User", phone: "081200000003", address: "Jl. Teknologi No. 3, Jakarta", gender: "MALE", dateOfBirth: time.Date(1995, 11, 8, 0, 0, 0, 0, time.Local)},
 	}
 	employees := make(map[string]model.Employee, len(accounts))
 	for _, fixture := range accounts {
-		employee, err := ensureEmployee(db, fixture.number, fixture.email, fixture.firstName, fixture.lastName)
+		employee, err := ensureEmployee(db, fixture)
 		if err != nil {
 			return err
 		}
@@ -140,19 +141,28 @@ func seedLeaveRules(db *gorm.DB) error {
 	return nil
 }
 
-func ensureEmployee(db *gorm.DB, number, email, firstName, lastName string) (model.Employee, error) {
+func ensureEmployee(db *gorm.DB, fixture account) (model.Employee, error) {
 	var employee model.Employee
-	if err := db.Where("employee_number = ?", number).First(&employee).Error; err == nil {
+	if err := db.Where("employee_number = ?", fixture.number).First(&employee).Error; err == nil {
+		if err := db.Model(&employee).Updates(map[string]interface{}{
+			"email": fixture.email, "first_name": fixture.firstName, "last_name": fixture.lastName,
+			"phone": fixture.phone, "address": fixture.address, "gender": fixture.gender,
+			"date_of_birth": fixture.dateOfBirth,
+		}).Error; err != nil {
+			return employee, fmt.Errorf("update employee %s: %w", fixture.number, err)
+		}
 		return employee, nil
 	} else if err != gorm.ErrRecordNotFound {
-		return employee, fmt.Errorf("find employee %s: %w", number, err)
+		return employee, fmt.Errorf("find employee %s: %w", fixture.number, err)
 	}
 	employee = model.Employee{
-		EmployeeNumber: number, FirstName: firstName, LastName: lastName,
-		Email: email, JoinDate: time.Now().AddDate(-1, 0, 0), Status: "ACTIVE",
+		EmployeeNumber: fixture.number, FirstName: fixture.firstName, LastName: fixture.lastName,
+		Email: fixture.email, Phone: fixture.phone, Address: fixture.address,
+		DateOfBirth: &fixture.dateOfBirth, Gender: fixture.gender,
+		JoinDate: time.Now().AddDate(-1, 0, 0), Status: "ACTIVE",
 	}
 	if err := db.Create(&employee).Error; err != nil {
-		return employee, fmt.Errorf("create employee %s: %w", number, err)
+		return employee, fmt.Errorf("create employee %s: %w", fixture.number, err)
 	}
 	return employee, nil
 }

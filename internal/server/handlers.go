@@ -44,7 +44,7 @@ func (s *Server) login(c *gin.Context) {
 		return
 	}
 	var user model.User
-	if s.db.Preload("Role").Preload("Employee").Where("email = ? AND is_active = ?", strings.ToLower(input.Email), true).First(&user).Error != nil || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(input.Password)) != nil {
+	if s.db.Preload("Role").Preload("Employee.Department").Preload("Employee.Position").Preload("Employee.Manager").Where("email = ? AND is_active = ?", strings.ToLower(input.Email), true).First(&user).Error != nil || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(input.Password)) != nil {
 		fail(c, 401, "INVALID_CREDENTIALS", "Email or password is incorrect")
 		return
 	}
@@ -95,7 +95,7 @@ func (s *Server) refresh(c *gin.Context) {
 		return
 	}
 	var user model.User
-	if s.db.Preload("Role").Preload("Employee").First(&user, stored.UserID).Error != nil || !user.IsActive {
+	if s.db.Preload("Role").Preload("Employee.Department").Preload("Employee.Position").Preload("Employee.Manager").First(&user, stored.UserID).Error != nil || !user.IsActive {
 		fail(c, 401, "UNAUTHORIZED", "User is inactive")
 		return
 	}
@@ -126,7 +126,7 @@ func (s *Server) logout(c *gin.Context) {
 func (s *Server) me(c *gin.Context) {
 	var user model.User
 	uid := c.MustGet("user_id")
-	if s.db.Preload("Role").Preload("Employee").First(&user, uid).Error != nil {
+	if s.db.Preload("Role").Preload("Employee.Department").Preload("Employee.Position").Preload("Employee.Manager").First(&user, uid).Error != nil {
 		fail(c, 404, "NOT_FOUND", "User not found")
 		return
 	}
@@ -1227,21 +1227,21 @@ func (s *Server) dashboard(c *gin.Context) {
 		s.db.Model(&model.User{}).Where("is_active = ?", true).Count(&users)
 	}
 	ok(c, gin.H{
-		"preset":                  preset,
-		"period_start":            start.Format("2006-01-02"),
-		"period_end":              end.Format("2006-01-02"),
-		"total_employees":         activeEmployees,
-		"total_departments":       len(departmentCounts),
-		"total_users":             users,
-		"pending_leaves":          leaveStatusCounts["PENDING"],
-		"present_today":           presentToday,
-		"absent_today":            maxInt(activeEmployees-presentToday, 0),
-		"department_counts":       departmentCounts,
+		"preset":                   preset,
+		"period_start":             start.Format("2006-01-02"),
+		"period_end":               end.Format("2006-01-02"),
+		"total_employees":          activeEmployees,
+		"total_departments":        len(departmentCounts),
+		"total_users":              users,
+		"pending_leaves":           leaveStatusCounts["PENDING"],
+		"present_today":            presentToday,
+		"absent_today":             maxInt(activeEmployees-presentToday, 0),
+		"department_counts":        departmentCounts,
 		"attendance_status_counts": attendanceStatusCounts,
 		"leave_monthly":            leaveMonthly,
 		"leave_status_counts":      leaveStatusCounts,
-		"employee_status_counts":  employeeStatusCounts,
-		"late_attendance":         lateCount,
+		"employee_status_counts":   employeeStatusCounts,
+		"late_attendance":          lateCount,
 	})
 }
 

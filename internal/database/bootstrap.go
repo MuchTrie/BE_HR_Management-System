@@ -14,7 +14,7 @@ import (
 
 const (
 	currentSchemaVersion = 3
-	currentSeedVersion   = 2
+	currentSeedVersion   = 3
 )
 
 type bootstrapState struct {
