@@ -919,18 +919,18 @@ func (s *Server) listHolidays(c *gin.Context) {
 	var holidays []model.CompanyHoliday
 	query := s.db.Order("date ASC")
 	if year := c.Query("year"); year != "" {
-		query = query.Where("date >= ? AND date < ?", year+"-01-01", strconv.Itoa(mustInt(year)+1)+"-01-01")
+		parsed, err := strconv.Atoi(year)
+		if err != nil || parsed < 1 {
+			fail(c, http.StatusBadRequest, "INVALID_YEAR", "Year must be a positive integer")
+			return
+		}
+		query = query.Where("date >= ? AND date < ?", year+"-01-01", strconv.Itoa(parsed+1)+"-01-01")
 	}
 	if err := query.Find(&holidays).Error; err != nil {
 		fail(c, http.StatusInternalServerError, "DATABASE_ERROR", "Could not load holidays")
 		return
 	}
 	ok(c, holidays)
-}
-
-func mustInt(value string) int {
-	parsed, _ := strconv.Atoi(value)
-	return parsed
 }
 
 func (s *Server) createHoliday(c *gin.Context) {
@@ -947,12 +947,90 @@ func (s *Server) createHoliday(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "INVALID_DATE", "Date must use YYYY-MM-DD format")
 		return
 	}
-	holiday := model.CompanyHoliday{Date: date, Name: strings.TrimSpace(input.Name)}
-	if err := s.db.Create(&holiday).Error; err != nil {
+	name := strings.TrimSpace(input.Name)
+	if name == "" {
+		fail(c, http.StatusBadRequest, "INVALID_REQUEST", "Holiday name is required")
+		return
+	}
+	holiday := model.CompanyHoliday{Date: date, Name: name}
+	var existing int64
+	if err := s.db.Model(&model.CompanyHoliday{}).Where("date = ?", date).Count(&existing).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "DATABASE_ERROR", "Could not check holiday date")
+		return
+	}
+	if existing > 0 {
 		fail(c, http.StatusConflict, "DUPLICATE", "Holiday already exists")
 		return
 	}
+	if err := s.db.Create(&holiday).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "DATABASE_ERROR", "Could not create holiday")
+		return
+	}
 	created(c, holiday)
+}
+
+func (s *Server) updateHoliday(c *gin.Context) {
+	holidayID, valid := id(c)
+	if !valid {
+		fail(c, http.StatusBadRequest, "INVALID_ID", "Invalid holiday id")
+		return
+	}
+	var holiday model.CompanyHoliday
+	if s.db.First(&holiday, holidayID).Error != nil {
+		fail(c, http.StatusNotFound, "NOT_FOUND", "Holiday not found")
+		return
+	}
+	var input struct {
+		Date string `json:"date" binding:"required"`
+		Name string `json:"name" binding:"required"`
+	}
+	if c.ShouldBindJSON(&input) != nil {
+		fail(c, http.StatusBadRequest, "INVALID_REQUEST", "Holiday date and name are required")
+		return
+	}
+	date, err := parseDate(input.Date)
+	if err != nil {
+		fail(c, http.StatusBadRequest, "INVALID_DATE", "Date must use YYYY-MM-DD format")
+		return
+	}
+	name := strings.TrimSpace(input.Name)
+	if name == "" {
+		fail(c, http.StatusBadRequest, "INVALID_REQUEST", "Holiday name is required")
+		return
+	}
+	var existing int64
+	if err := s.db.Model(&model.CompanyHoliday{}).Where("date = ? AND id <> ?", date, holidayID).Count(&existing).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "DATABASE_ERROR", "Could not check holiday date")
+		return
+	}
+	if existing > 0 {
+		fail(c, http.StatusConflict, "DUPLICATE", "Holiday date already exists")
+		return
+	}
+	if err := s.db.Model(&holiday).Updates(map[string]interface{}{"date": date, "name": name}).Error; err != nil {
+		fail(c, http.StatusInternalServerError, "DATABASE_ERROR", "Could not update holiday")
+		return
+	}
+	s.db.First(&holiday, holidayID)
+	ok(c, holiday)
+}
+
+func (s *Server) deleteHoliday(c *gin.Context) {
+	holidayID, valid := id(c)
+	if !valid {
+		fail(c, http.StatusBadRequest, "INVALID_ID", "Invalid holiday id")
+		return
+	}
+	result := s.db.Delete(&model.CompanyHoliday{}, holidayID)
+	if result.Error != nil {
+		fail(c, http.StatusInternalServerError, "DELETE_FAILED", "Could not delete holiday")
+		return
+	}
+	if result.RowsAffected == 0 {
+		fail(c, http.StatusNotFound, "NOT_FOUND", "Holiday not found")
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 func (s *Server) listApprovalDelegations(c *gin.Context) {

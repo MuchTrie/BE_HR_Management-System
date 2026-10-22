@@ -51,6 +51,8 @@ func registerRoutes(s *Server, cfg config.Config) *gin.Engine {
 	protected.PATCH("/leave-policies/:id", middleware.RequireRoles("ADMIN"), s.updateLeavePolicy)
 	protected.GET("/holidays", s.listHolidays)
 	protected.POST("/holidays", middleware.RequireRoles("ADMIN"), s.createHoliday)
+	protected.PUT("/holidays/:id", middleware.RequireRoles("ADMIN"), s.updateHoliday)
+	protected.DELETE("/holidays/:id", middleware.RequireRoles("ADMIN"), s.deleteHoliday)
 	protected.GET("/approval-delegations", s.listApprovalDelegations)
 	protected.POST("/approval-delegations", middleware.RequireRoles("MANAGER", "ADMIN"), s.createApprovalDelegation)
 	protected.GET("/leaves/:id", s.getLeave)
