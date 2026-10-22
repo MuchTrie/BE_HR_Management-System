@@ -545,6 +545,8 @@ func (s *Server) listAttendance(c *gin.Context) {
 	q := s.db.Preload("Employee")
 	if role, _ := c.Get("role"); role == "MANAGER" {
 		q = q.Where("employee_id IN (?)", s.db.Model(&model.Employee{}).Select("id").Where("manager_id = ?", s.currentEmployee(c)))
+	} else if role == "EMPLOYEE" {
+		q = q.Where("employee_id = ?", s.currentEmployee(c))
 	}
 	if employeeID := c.Query("employee_id"); employeeID != "" {
 		q = q.Where("employee_id = ?", employeeID)
