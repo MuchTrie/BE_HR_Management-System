@@ -71,3 +71,70 @@ employee@example.com / change-me-employee
 ```
 
 Data tersebut khusus development. Ganti atau nonaktifkan fixture seeder sebelum deployment production.
+
+## Menjalankan dengan Docker
+
+Dockerfile backend berada di `backend/Dockerfile`. Image backend menggunakan
+multi-stage build untuk mengompilasi aplikasi Go menjadi binary Linux, lalu
+menjalankannya pada container runtime.
+
+Dari root project, jalankan seluruh stack:
+
+```powershell
+docker compose up -d --build
+```
+
+Backend tersedia di:
+
+```text
+http://localhost:8080/api/v1
+```
+
+Di dalam Docker network, backend mengakses MySQL menggunakan hostname service
+`mysql`, bukan `localhost`. Database development menggunakan named volume
+`mysql_data` agar data tetap ada ketika container dihentikan.
+
+### Setelah mengubah fitur backend
+
+Perubahan source code backend harus masuk ke image baru karena source code
+disalin dan dikompilasi ketika image dibuat. Jalankan:
+
+```powershell
+docker compose up -d --build backend
+```
+
+Jika frontend dan backend sama-sama berubah:
+
+```powershell
+docker compose up -d --build
+```
+
+`docker compose restart backend` hanya me-restart container menggunakan image
+lama, sehingga tidak cukup untuk memasukkan perubahan source code.
+
+### Perintah Docker yang berguna
+
+```powershell
+docker compose ps
+docker compose logs -f backend
+docker compose down
+```
+
+Untuk mengakses MySQL dari container:
+
+```powershell
+docker compose exec mysql mysql -u securehr -p securehr
+```
+
+Gunakan password development:
+
+```text
+securehr-dev-password
+```
+
+`docker compose down` tidak menghapus volume database. Perintah berikut
+bersifat destruktif terhadap database development:
+
+```powershell
+docker compose down -v
+```
